@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Keep ratings, labels, keywords, and edits in portable .xmp sidecars — and import your Lightroom presets.",
   "author": "Anthony Reimche <anthonyreimche@gmail.com>",
-  "main": "dist/index.js",
+  "main": "index.js",
   "categories": ["Presets"],
   "keywords": ["xmp", "sidecar", "lightroom", "metadata"],
   "license": "MIT",

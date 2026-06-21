@@ -52,7 +52,7 @@ for (const pluginsDir of resolvePluginsDirs()) {
     path.join(EXT_DIR, "safelight.json"),
     path.join(target, "safelight.json"),
   );
-  fs.cpSync(path.join(EXT_DIR, "dist"), path.join(target, "dist"), { recursive: true });
+  fs.copyFileSync(path.join(EXT_DIR, "index.js"), path.join(target, "index.js"));
   console.log(`[xmp-tools] installed to ${target}`);
 }
 console.log("[xmp-tools] restart SafeLight (or re-enable the extension) to load it.");
