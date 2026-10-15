@@ -75,6 +75,21 @@ export interface ColorGradingParams {
   highlightRange: number;
 }
 
+export interface VignetteParams {
+  amount: number;     // -100..100 (negative darkens the edges)
+  midpoint: number;   // 0..100
+  roundness: number;  // -100..100
+  feather: number;    // 0..100
+  highlights: number; // 0..100 highlight priority
+}
+
+export interface GrainParams {
+  amount: number;    // 0..100
+  size: number;      // 25..100
+  roughness: number; // 0..100
+  color: number;     // 0..100 (0 = mono)
+}
+
 /** Full develop params. The importer only ever produces a Partial; core's
  *  normalizeParams() fills everything else with defaults. */
 export interface DevelopParams {
@@ -104,6 +119,8 @@ export interface DevelopParams {
   toneCurve: ToneCurves;
   hsl: HSLAdjustments;
   colorGrading: ColorGradingParams;
+  vignette: VignetteParams;
+  grain: GrainParams;
   [key: string]: unknown;
 }
 

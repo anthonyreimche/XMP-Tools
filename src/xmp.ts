@@ -120,11 +120,77 @@ export function parseXmp(xmpXml: string): XmpMetadata {
 
 // ── XMP Generation ─────────────────────────────────────────────────────────
 
+interface XmpWriteOptions {
+  includePrivateNamespace?: boolean;
+}
+
+/** Properties this extension owns and rewrites wholesale on every write. The
+ *  safelight: pair is owned only when the private namespace is in play, so a
+ *  plain rating/label write never strips the develop params an edit commit
+ *  saved earlier. */
+const OWNED_TAGS = [
+  "xmp:Rating",
+  "xmp:Label",
+  "xmp:PickFlag",
+  "xmp:RejectFlag",
+  "photoshop:Urgency",
+  "dc:subject",
+  "lr:hierarchicalSubject",
+] as const;
+const PRIVATE_TAGS = ["safelight:DevelopParams", "safelight:EditHistory"] as const;
+
+/** Serialize the owned properties that currently have a value, one element per
+ *  entry. An absent entry means "unset" — the upsert removes the property. */
+function ownedElements(
+  photo: CatalogPhoto,
+  editState?: EditState,
+  options?: XmpWriteOptions
+): string[] {
+  const out: string[] = [];
+
+  // Rating
+  if (photo.rating > 0) {
+    out.push(`<xmp:Rating>${photo.rating}</xmp:Rating>`);
+  }
+
+  // Label (convert "none" to empty, others to Title Case)
+  if (photo.colorLabel && photo.colorLabel !== "none") {
+    const labelTitle = photo.colorLabel.charAt(0).toUpperCase() + photo.colorLabel.slice(1);
+    out.push(`<xmp:Label>${escapeXml(labelTitle)}</xmp:Label>`);
+  }
+
+  // Flag - use photoshop:Urgency (1=pick/high, 8=reject/low)
+  if (photo.flag === "pick") {
+    out.push('<photoshop:Urgency>1</photoshop:Urgency>');
+  } else if (photo.flag === "reject") {
+    out.push('<photoshop:Urgency>8</photoshop:Urgency>');
+  }
+
+  // Keywords, flat plus (flattened) hierarchical
+  if (photo.keywords.length > 0) {
+    const items = photo.keywords.map((kw) => `<rdf:li>${escapeXml(kw)}</rdf:li>`).join("");
+    out.push(`<dc:subject><rdf:Bag>${items}</rdf:Bag></dc:subject>`);
+    out.push(`<lr:hierarchicalSubject><rdf:Bag>${items}</rdf:Bag></lr:hierarchicalSubject>`);
+  }
+
+  // Private Safelight namespace for edit params (round-tripping)
+  if (options?.includePrivateNamespace && editState) {
+    const currentEdit = editState.stack[editState.currentIndex];
+    if (currentEdit) {
+      const paramsJson = JSON.stringify(currentEdit.params);
+      out.push(`<safelight:DevelopParams>${escapeXml(paramsJson)}</safelight:DevelopParams>`);
+      out.push(`<safelight:EditHistory>${escapeXml(JSON.stringify(editState.stack.map(s => ({ timestamp: s.timestamp, label: s.label }))))}</safelight:EditHistory>`);
+    }
+  }
+
+  return out;
+}
+
 /** Generate XMP XML from Safelight metadata and optional edit params. */
 export function generateXmp(
   photo: CatalogPhoto,
   editState?: EditState,
-  options?: { includePrivateNamespace?: boolean }
+  options?: XmpWriteOptions
 ): string {
   const lines: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -143,55 +209,8 @@ export function generateXmp(
   }
   lines.push('      rdf:about="">');
 
-  // Rating
-  if (photo.rating > 0) {
-    lines.push(`      <xmp:Rating>${photo.rating}</xmp:Rating>`);
-  }
-
-  // Label (convert "none" to empty, others to Title Case)
-  if (photo.colorLabel && photo.colorLabel !== "none") {
-    const labelTitle = photo.colorLabel.charAt(0).toUpperCase() + photo.colorLabel.slice(1);
-    lines.push(`      <xmp:Label>${escapeXml(labelTitle)}</xmp:Label>`);
-  }
-
-  // Flag - use photoshop:Urgency (1=pick/high, 8=reject/low)
-  if (photo.flag === "pick") {
-    lines.push('      <photoshop:Urgency>1</photoshop:Urgency>');
-  } else if (photo.flag === "reject") {
-    lines.push('      <photoshop:Urgency>8</photoshop:Urgency>');
-  }
-
-  // Keywords
-  if (photo.keywords.length > 0) {
-    lines.push('      <dc:subject>');
-    lines.push('        <rdf:Bag>');
-    for (const kw of photo.keywords) {
-      lines.push(`          <rdf:li>${escapeXml(kw)}</rdf:li>`);
-    }
-    lines.push('        </rdf:Bag>');
-    lines.push('      </dc:subject>');
-  }
-
-  // Hierarchical keywords (flatten hierarchy for now)
-  if (photo.keywords.length > 0) {
-    lines.push('      <lr:hierarchicalSubject>');
-    lines.push('        <rdf:Bag>');
-    for (const kw of photo.keywords) {
-      lines.push(`          <rdf:li>${escapeXml(kw)}</rdf:li>`);
-    }
-    lines.push('        </rdf:Bag>');
-    lines.push('      </lr:hierarchicalSubject>');
-  }
-
-  // Private Safelight namespace for edit params (round-tripping)
-  if (options?.includePrivateNamespace && editState) {
-    const currentEdit = editState.stack[editState.currentIndex];
-    if (currentEdit) {
-      // Serialize develop params as JSON in the XMP
-      const paramsJson = JSON.stringify(currentEdit.params);
-      lines.push(`      <safelight:DevelopParams>${escapeXml(paramsJson)}</safelight:DevelopParams>`);
-      lines.push(`      <safelight:EditHistory>${escapeXml(JSON.stringify(editState.stack.map(s => ({ timestamp: s.timestamp, label: s.label }))))}</safelight:EditHistory>`);
-    }
+  for (const prop of ownedElements(photo, editState, options)) {
+    lines.push(`      ${prop}`);
   }
 
   lines.push('    </rdf:Description>');
@@ -199,6 +218,54 @@ export function generateXmp(
   lines.push('</x:xmpmeta>');
 
   return lines.join('\n');
+}
+
+/** Produce updated XMP text carrying the photo's current metadata while
+ *  preserving every property another writer put there (Advanced EXIF Tools'
+ *  caption/copyright/GPS, Lightroom develop settings, …). With no usable
+ *  existing packet this is generateXmp. */
+export function upsertXmp(
+  existing: string | null,
+  photo: CatalogPhoto,
+  editState?: EditState,
+  options?: XmpWriteOptions
+): string {
+  if (!existing || !/<rdf:Description[\s/>]/.test(existing)) {
+    return generateXmp(photo, editState, options);
+  }
+
+  let text = existing;
+  // darktable/exiv2 write attribute-only Descriptions self-closed; expand so
+  // the element insertion below has a closing tag to land in.
+  text = text.replace(/<rdf:Description\b([^>]*?)\/\s*>/, "<rdf:Description$1></rdf:Description>");
+
+  const owned: readonly string[] = options?.includePrivateNamespace
+    ? [...OWNED_TAGS, ...PRIVATE_TAGS]
+    : OWNED_TAGS;
+  for (const tag of owned) {
+    text = text.replace(new RegExp(`\\s*<${tag}[\\s\\S]*?<\\/${tag}>`, "g"), "");
+    text = text.replace(new RegExp(`\\s*<${tag}\\b[^>]*/>`, "g"), "");
+    text = text.replace(new RegExp(`\\s+${tag}="[^"]*"`, "g"), "");
+  }
+
+  // Make sure the namespaces we write are declared on the first Description.
+  text = text.replace(/<rdf:Description\b([^>]*)>/, (_full, attrs: string) => {
+    let a = attrs;
+    if (!/xmlns:xmp=/.test(a)) a += ` xmlns:xmp="${NAMESPACES.xmp}"`;
+    if (!/xmlns:dc=/.test(a)) a += ` xmlns:dc="${NAMESPACES.dc}"`;
+    if (!/xmlns:photoshop=/.test(a)) a += ` xmlns:photoshop="${NAMESPACES.photoshop}"`;
+    if (!/xmlns:lr=/.test(a)) a += ` xmlns:lr="${NAMESPACES.lr}"`;
+    if (options?.includePrivateNamespace && !/xmlns:safelight=/.test(a)) {
+      a += ` xmlns:safelight="${NAMESPACES.safelight}"`;
+    }
+    return `<rdf:Description${a}>`;
+  });
+
+  const props = ownedElements(photo, editState, options);
+  const insertion = props.length ? `      ${props.join("\n      ")}\n    ` : "";
+  // Function form: user text (keywords, params JSON) may contain "$&"-style
+  // sequences a replacement string would expand.
+  return text.replace(/<\/rdf:Description>/, () => `${insertion}</rdf:Description>`);
 }
 
 /** Escape special XML characters. */
@@ -229,16 +296,24 @@ export async function readXmpSidecar(
   }
 }
 
-/** Write XMP sidecar file next to the original image. */
+/** Write XMP sidecar file next to the original image. Reads any existing
+ *  sidecar first and upserts, so properties written by other tools survive. */
 export async function writeXmpSidecar(
   parentDir: FileSystemDirectoryHandle,
   imageFilename: string,
   photo: CatalogPhoto,
   editState?: EditState,
-  options?: { includePrivateNamespace?: boolean }
+  options?: XmpWriteOptions
 ): Promise<void> {
   const xmpName = getXmpSidecarName(imageFilename);
-  const xmpXml = generateXmp(photo, editState, options);
+  let existing: string | null = null;
+  try {
+    const handle = await parentDir.getFileHandle(xmpName);
+    existing = await (await handle.getFile()).text();
+  } catch {
+    existing = null; // no sidecar yet
+  }
+  const xmpXml = upsertXmp(existing, photo, editState, options);
 
   const handle = await parentDir.getFileHandle(xmpName, { create: true });
   const writable = await handle.createWritable();

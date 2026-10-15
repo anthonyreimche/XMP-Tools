@@ -68,6 +68,49 @@ function parseXmp(xmpXml) {
 	}
 	return result;
 }
+/** Properties this extension owns and rewrites wholesale on every write. The
+*  safelight: pair is owned only when the private namespace is in play, so a
+*  plain rating/label write never strips the develop params an edit commit
+*  saved earlier. */
+const OWNED_TAGS = [
+	"xmp:Rating",
+	"xmp:Label",
+	"xmp:PickFlag",
+	"xmp:RejectFlag",
+	"photoshop:Urgency",
+	"dc:subject",
+	"lr:hierarchicalSubject"
+];
+const PRIVATE_TAGS = ["safelight:DevelopParams", "safelight:EditHistory"];
+/** Serialize the owned properties that currently have a value, one element per
+*  entry. An absent entry means "unset" — the upsert removes the property. */
+function ownedElements(photo, editState, options) {
+	const out = [];
+	if (photo.rating > 0) out.push(`<xmp:Rating>${photo.rating}</xmp:Rating>`);
+	if (photo.colorLabel && photo.colorLabel !== "none") {
+		const labelTitle = photo.colorLabel.charAt(0).toUpperCase() + photo.colorLabel.slice(1);
+		out.push(`<xmp:Label>${escapeXml(labelTitle)}</xmp:Label>`);
+	}
+	if (photo.flag === "pick") out.push("<photoshop:Urgency>1</photoshop:Urgency>");
+	else if (photo.flag === "reject") out.push("<photoshop:Urgency>8</photoshop:Urgency>");
+	if (photo.keywords.length > 0) {
+		const items = photo.keywords.map((kw) => `<rdf:li>${escapeXml(kw)}</rdf:li>`).join("");
+		out.push(`<dc:subject><rdf:Bag>${items}</rdf:Bag></dc:subject>`);
+		out.push(`<lr:hierarchicalSubject><rdf:Bag>${items}</rdf:Bag></lr:hierarchicalSubject>`);
+	}
+	if (options?.includePrivateNamespace && editState) {
+		const currentEdit = editState.stack[editState.currentIndex];
+		if (currentEdit) {
+			const paramsJson = JSON.stringify(currentEdit.params);
+			out.push(`<safelight:DevelopParams>${escapeXml(paramsJson)}</safelight:DevelopParams>`);
+			out.push(`<safelight:EditHistory>${escapeXml(JSON.stringify(editState.stack.map((s) => ({
+				timestamp: s.timestamp,
+				label: s.label
+			}))))}</safelight:EditHistory>`);
+		}
+	}
+	return out;
+}
 /** Generate XMP XML from Safelight metadata and optional edit params. */
 function generateXmp(photo, editState, options) {
 	const lines = [
@@ -82,42 +125,38 @@ function generateXmp(photo, editState, options) {
 	lines.push(`      xmlns:lr="${NAMESPACES.lr}"`);
 	if (options?.includePrivateNamespace) lines.push(`      xmlns:safelight="${NAMESPACES.safelight}"`);
 	lines.push("      rdf:about=\"\">");
-	if (photo.rating > 0) lines.push(`      <xmp:Rating>${photo.rating}</xmp:Rating>`);
-	if (photo.colorLabel && photo.colorLabel !== "none") {
-		const labelTitle = photo.colorLabel.charAt(0).toUpperCase() + photo.colorLabel.slice(1);
-		lines.push(`      <xmp:Label>${escapeXml(labelTitle)}</xmp:Label>`);
-	}
-	if (photo.flag === "pick") lines.push("      <photoshop:Urgency>1</photoshop:Urgency>");
-	else if (photo.flag === "reject") lines.push("      <photoshop:Urgency>8</photoshop:Urgency>");
-	if (photo.keywords.length > 0) {
-		lines.push("      <dc:subject>");
-		lines.push("        <rdf:Bag>");
-		for (const kw of photo.keywords) lines.push(`          <rdf:li>${escapeXml(kw)}</rdf:li>`);
-		lines.push("        </rdf:Bag>");
-		lines.push("      </dc:subject>");
-	}
-	if (photo.keywords.length > 0) {
-		lines.push("      <lr:hierarchicalSubject>");
-		lines.push("        <rdf:Bag>");
-		for (const kw of photo.keywords) lines.push(`          <rdf:li>${escapeXml(kw)}</rdf:li>`);
-		lines.push("        </rdf:Bag>");
-		lines.push("      </lr:hierarchicalSubject>");
-	}
-	if (options?.includePrivateNamespace && editState) {
-		const currentEdit = editState.stack[editState.currentIndex];
-		if (currentEdit) {
-			const paramsJson = JSON.stringify(currentEdit.params);
-			lines.push(`      <safelight:DevelopParams>${escapeXml(paramsJson)}</safelight:DevelopParams>`);
-			lines.push(`      <safelight:EditHistory>${escapeXml(JSON.stringify(editState.stack.map((s) => ({
-				timestamp: s.timestamp,
-				label: s.label
-			}))))}</safelight:EditHistory>`);
-		}
-	}
+	for (const prop of ownedElements(photo, editState, options)) lines.push(`      ${prop}`);
 	lines.push("    </rdf:Description>");
 	lines.push("  </rdf:RDF>");
 	lines.push("</x:xmpmeta>");
 	return lines.join("\n");
+}
+/** Produce updated XMP text carrying the photo's current metadata while
+*  preserving every property another writer put there (Advanced EXIF Tools'
+*  caption/copyright/GPS, Lightroom develop settings, …). With no usable
+*  existing packet this is generateXmp. */
+function upsertXmp(existing, photo, editState, options) {
+	if (!existing || !/<rdf:Description[\s/>]/.test(existing)) return generateXmp(photo, editState, options);
+	let text = existing;
+	text = text.replace(/<rdf:Description\b([^>]*?)\/\s*>/, "<rdf:Description$1></rdf:Description>");
+	const owned = options?.includePrivateNamespace ? [...OWNED_TAGS, ...PRIVATE_TAGS] : OWNED_TAGS;
+	for (const tag of owned) {
+		text = text.replace(new RegExp(`\\s*<${tag}[\\s\\S]*?<\\/${tag}>`, "g"), "");
+		text = text.replace(new RegExp(`\\s*<${tag}\\b[^>]*/>`, "g"), "");
+		text = text.replace(new RegExp(`\\s+${tag}="[^"]*"`, "g"), "");
+	}
+	text = text.replace(/<rdf:Description\b([^>]*)>/, (_full, attrs) => {
+		let a = attrs;
+		if (!/xmlns:xmp=/.test(a)) a += ` xmlns:xmp="${NAMESPACES.xmp}"`;
+		if (!/xmlns:dc=/.test(a)) a += ` xmlns:dc="${NAMESPACES.dc}"`;
+		if (!/xmlns:photoshop=/.test(a)) a += ` xmlns:photoshop="${NAMESPACES.photoshop}"`;
+		if (!/xmlns:lr=/.test(a)) a += ` xmlns:lr="${NAMESPACES.lr}"`;
+		if (options?.includePrivateNamespace && !/xmlns:safelight=/.test(a)) a += ` xmlns:safelight="${NAMESPACES.safelight}"`;
+		return `<rdf:Description${a}>`;
+	});
+	const props = ownedElements(photo, editState, options);
+	const insertion = props.length ? `      ${props.join("\n      ")}\n    ` : "";
+	return text.replace(/<\/rdf:Description>/, () => `${insertion}</rdf:Description>`);
 }
 /** Escape special XML characters. */
 function escapeXml(text) {
@@ -132,10 +171,17 @@ async function readXmpSidecar(parentDir, imageFilename) {
 		return null;
 	}
 }
-/** Write XMP sidecar file next to the original image. */
+/** Write XMP sidecar file next to the original image. Reads any existing
+*  sidecar first and upserts, so properties written by other tools survive. */
 async function writeXmpSidecar(parentDir, imageFilename, photo, editState, options) {
 	const xmpName = getXmpSidecarName(imageFilename);
-	const xmpXml = generateXmp(photo, editState, options);
+	let existing = null;
+	try {
+		existing = await (await (await parentDir.getFileHandle(xmpName)).getFile()).text();
+	} catch {
+		existing = null;
+	}
+	const xmpXml = upsertXmp(existing, photo, editState, options);
 	const writable = await (await parentDir.getFileHandle(xmpName, { create: true })).createWritable();
 	await writable.write(xmpXml);
 	await writable.close();
@@ -270,6 +316,42 @@ function readGradeRange(xml, gradeKey, splitKey) {
 		luma: luma ?? 0
 	};
 }
+function readVignette(xml) {
+	const amount = readCrsNum(xml, "PostCropVignetteAmount");
+	const midpoint = readCrsNum(xml, "PostCropVignetteMidpoint");
+	const roundness = readCrsNum(xml, "PostCropVignetteRoundness");
+	const feather = readCrsNum(xml, "PostCropVignetteFeather");
+	const highlights = readCrsNum(xml, "PostCropVignetteHighlightContrast");
+	if ([
+		amount,
+		midpoint,
+		roundness,
+		feather,
+		highlights
+	].every((v) => v == null)) return null;
+	return {
+		amount: amount ?? 0,
+		midpoint: midpoint ?? 50,
+		roundness: roundness ?? 0,
+		feather: feather ?? 50,
+		highlights: highlights ?? 0
+	};
+}
+function readGrain(xml) {
+	const amount = readCrsNum(xml, "GrainAmount");
+	const size = readCrsNum(xml, "GrainSize");
+	const roughness = readCrsNum(xml, "GrainFrequency");
+	if (amount == null && size == null && roughness == null) return null;
+	return {
+		amount: amount ?? 0,
+		size: size ?? 25,
+		roughness: roughness ?? 50,
+		color: 0
+	};
+}
+function withoutEmbeddedLook(xml) {
+	return xml.replace(/<crs:Look\b[\s\S]*?<\/crs:Look>/g, "");
+}
 function unescapeXml(text) {
 	return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
@@ -281,8 +363,9 @@ function readPresetName(xml) {
 }
 /** Parse a Lightroom/ACR .xmp preset. Returns null if it has no recognizable
 *  crs: develop settings. */
-function parseLightroomXmp(xml, fallbackName = "Imported preset") {
-	if (!xml.includes("crs:")) return null;
+function parseLightroomXmp(source, fallbackName = "Imported preset") {
+	if (!source.includes("crs:")) return null;
+	const xml = withoutEmbeddedLook(source);
 	const params = {};
 	for (const [crsKey, paramKey] of Object.entries(CRS_SCALAR_MAP)) {
 		const n = readCrsNum(xml, crsKey);
@@ -352,6 +435,10 @@ function parseLightroomXmp(xml, fallbackName = "Imported preset") {
 			highlightRange: 50
 		};
 	}
+	const vignette = readVignette(xml);
+	if (vignette) params.vignette = vignette;
+	const grain = readGrain(xml);
+	if (grain) params.grain = grain;
 	if (Object.keys(params).length === 0) return null;
 	return {
 		name: readPresetName(xml) ?? fallbackName,

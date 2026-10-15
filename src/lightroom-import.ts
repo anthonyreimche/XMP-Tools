@@ -11,6 +11,8 @@ import type {
   DevelopParams,
   HSLChannel,
   ColorGradingRange,
+  VignetteParams,
+  GrainParams,
 } from "./safelight";
 
 // crs: scalar → DevelopParams numeric key. Lightroom's ranges line up with
@@ -108,6 +110,40 @@ function readGradeRange(
   return { hue: hue ?? 0, sat: sat ?? 0, luma: luma ?? 0 };
 }
 
+// The Effects panel's post-crop vignette. Plain Vignette* keys are lens
+// vignetting correction, a different adjustment, and are not read.
+function readVignette(xml: string): VignetteParams | null {
+  const amount = readCrsNum(xml, "PostCropVignetteAmount");
+  const midpoint = readCrsNum(xml, "PostCropVignetteMidpoint");
+  const roundness = readCrsNum(xml, "PostCropVignetteRoundness");
+  const feather = readCrsNum(xml, "PostCropVignetteFeather");
+  const highlights = readCrsNum(xml, "PostCropVignetteHighlightContrast");
+  if ([amount, midpoint, roundness, feather, highlights].every((v) => v == null)) return null;
+  return {
+    amount: amount ?? 0,
+    midpoint: midpoint ?? 50,
+    roundness: roundness ?? 0,
+    feather: feather ?? 50,
+    highlights: highlights ?? 0,
+  };
+}
+
+// The Effects panel's grain. GrainFrequency is the Roughness slider; Lightroom
+// has no colour grain, so it stays mono.
+function readGrain(xml: string): GrainParams | null {
+  const amount = readCrsNum(xml, "GrainAmount");
+  const size = readCrsNum(xml, "GrainSize");
+  const roughness = readCrsNum(xml, "GrainFrequency");
+  if (amount == null && size == null && roughness == null) return null;
+  return { amount: amount ?? 0, size: size ?? 25, roughness: roughness ?? 50, color: 0 };
+}
+
+// Every preset embeds its profile as a crs:Look whose parameters (tone curve
+// included) describe how the profile renders, not what the preset adjusts.
+function withoutEmbeddedLook(xml: string): string {
+  return xml.replace(/<crs:Look\b[\s\S]*?<\/crs:Look>/g, "");
+}
+
 function unescapeXml(text: string): string {
   return text
     .replace(/&lt;/g, "<")
@@ -128,11 +164,12 @@ function readPresetName(xml: string): string | null {
 /** Parse a Lightroom/ACR .xmp preset. Returns null if it has no recognizable
  *  crs: develop settings. */
 export function parseLightroomXmp(
-  xml: string,
+  source: string,
   fallbackName = "Imported preset",
 ): { name: string; params: Partial<DevelopParams> } | null {
-  if (!xml.includes("crs:")) return null;
+  if (!source.includes("crs:")) return null;
 
+  const xml = withoutEmbeddedLook(source);
   const params: Partial<DevelopParams> = {};
 
   // Scalars
@@ -187,6 +224,12 @@ export function parseLightroomXmp(
       highlightRange: 50,
     };
   }
+
+  // Effects. Values pass through; core clamps grain size to its 25..100 range.
+  const vignette = readVignette(xml);
+  if (vignette) params.vignette = vignette;
+  const grain = readGrain(xml);
+  if (grain) params.grain = grain;
 
   if (Object.keys(params).length === 0) return null;
   return { name: readPresetName(xml) ?? fallbackName, params };

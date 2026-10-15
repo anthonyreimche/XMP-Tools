@@ -1,6 +1,8 @@
 // Tests for Lightroom (.xmp) preset parsing.
 // Run with: node --experimental-strip-types src/lightroom-import.test.ts
 
+import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { parseLightroomXmp } from "./lightroom-import.ts";
 
 let failures = 0;
@@ -12,6 +14,38 @@ function check(name: string, cond: boolean) {
     failures++;
   }
 }
+
+// A minimal preset: crs: attributes on the top-level description, plus any
+// child elements.
+function preset(attrs: string, body = ""): string {
+  return `<?xml version="1.0"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+      ${attrs}>
+      ${body}
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>`;
+}
+
+// The profile Lightroom embeds in every preset. Its parameters describe how the
+// profile renders, not what the preset adjusts.
+const ADOBE_COLOR_LOOK = `<crs:Look>
+        <rdf:Description crs:Name="Adobe Color" crs:Amount="1">
+          <crs:Parameters>
+            <rdf:Description crs:ProcessVersion="11.0" crs:Clarity2012="+40">
+              <crs:ToneCurvePV2012>
+                <rdf:Seq>
+                  <rdf:li>0, 0</rdf:li>
+                  <rdf:li>22, 16</rdf:li>
+                  <rdf:li>255, 255</rdf:li>
+                </rdf:Seq>
+              </crs:ToneCurvePV2012>
+            </rdf:Description>
+          </crs:Parameters>
+        </rdf:Description>
+      </crs:Look>`;
 
 // 1 — attribute form (how Lightroom usually writes presets)
 function testAttributeForm() {
@@ -91,10 +125,138 @@ function testNonXmp() {
   console.log("");
 }
 
+// 4 — Effects panel post-crop vignette
+function testPostCropVignette() {
+  console.log("Testing post-crop vignette...");
+  const full = parseLightroomXmp(preset(`
+      crs:PostCropVignetteAmount="-25"
+      crs:PostCropVignetteMidpoint="35"
+      crs:PostCropVignetteRoundness="-20"
+      crs:PostCropVignetteFeather="70"
+      crs:PostCropVignetteHighlightContrast="40"
+      crs:VignetteAmount="-50"`));
+  check(
+    "all five post-crop keys map to vignette",
+    isDeepStrictEqual(full?.params.vignette, {
+      amount: -25, midpoint: 35, roundness: -20, feather: 70, highlights: 40,
+    }),
+  );
+
+  const amountOnly = parseLightroomXmp(preset(`crs:PostCropVignetteAmount="-30"`));
+  check(
+    "missing post-crop keys take Lightroom's defaults",
+    isDeepStrictEqual(amountOnly?.params.vignette, {
+      amount: -30, midpoint: 50, roundness: 0, feather: 50, highlights: 0,
+    }),
+  );
+
+  const lensOnly = parseLightroomXmp(preset(`
+      crs:Exposure2012="+0.50"
+      crs:VignetteAmount="-50"
+      crs:VignetteMidpoint="30"`));
+  check("lens vignetting correction is not a vignette", lensOnly?.params.vignette === undefined);
+  console.log("");
+}
+
+// 5 — Effects panel grain
+function testGrain() {
+  console.log("Testing grain...");
+  const full = parseLightroomXmp(preset(`
+      crs:GrainAmount="35"
+      crs:GrainSize="60"
+      crs:GrainFrequency="70"`));
+  check(
+    "amount, size and frequency map to grain",
+    isDeepStrictEqual(full?.params.grain, { amount: 35, size: 60, roughness: 70, color: 0 }),
+  );
+
+  const amountOnly = parseLightroomXmp(preset(`crs:GrainAmount="20"`));
+  check(
+    "missing grain keys take Lightroom's defaults",
+    isDeepStrictEqual(amountOnly?.params.grain, { amount: 20, size: 25, roughness: 50, color: 0 }),
+  );
+  console.log("");
+}
+
+// 6 — the embedded profile (crs:Look) is not part of the preset's adjustments
+function testEmbeddedLookIgnored() {
+  console.log("Testing embedded crs:Look is ignored...");
+  const noOwnCurve = parseLightroomXmp(
+    preset(`crs:Exposure2012="+0.30"`, ADOBE_COLOR_LOOK),
+    "Fallback",
+  );
+  check("profile curve is not imported as a user curve", noOwnCurve?.params.toneCurve === undefined);
+  check("profile scalars are not imported", noOwnCurve?.params.clarity === undefined);
+  check("profile name is not the preset name", noOwnCurve?.name === "Fallback");
+
+  const lookFirst = parseLightroomXmp(preset(`crs:Exposure2012="+0.30"`, `${ADOBE_COLOR_LOOK}
+      <crs:ToneCurvePV2012>
+        <rdf:Seq>
+          <rdf:li>0, 24</rdf:li>
+          <rdf:li>255, 245</rdf:li>
+        </rdf:Seq>
+      </crs:ToneCurvePV2012>`));
+  check(
+    "preset's own curve wins when the Look comes first",
+    isDeepStrictEqual(lookFirst?.params.toneCurve?.rgb, [
+      { x: 0, y: 24 / 255 },
+      { x: 1, y: 245 / 255 },
+    ]),
+  );
+  console.log("");
+}
+
+// 7 — a real Lightroom Classic export
+function testWarmMatteFixture() {
+  console.log("Testing Lightroom Classic fixture (Warm Matte)...");
+  const xml = readFileSync(new URL("./__fixtures__/warm-matte.xmp", import.meta.url), "utf8");
+  const r = parseLightroomXmp(xml);
+  check("returns a result", r != null);
+  if (!r) return;
+  check("name", r.name === "Warm Matte");
+  check(
+    "vignette",
+    isDeepStrictEqual(r.params.vignette, {
+      amount: -15, midpoint: 50, roundness: 0, feather: 50, highlights: 0,
+    }),
+  );
+  check(
+    "grain",
+    isDeepStrictEqual(r.params.grain, { amount: 20, size: 25, roughness: 50, color: 0 }),
+  );
+  check(
+    "rgb curve is the preset's, not the profile's",
+    isDeepStrictEqual(r.params.toneCurve?.rgb, [
+      { x: 0, y: 24 / 255 },
+      { x: 64 / 255, y: 60 / 255 },
+      { x: 192 / 255, y: 200 / 255 },
+      { x: 1, y: 245 / 255 },
+    ]),
+  );
+
+  const withoutOwnCurve = xml.replace(
+    /<crs:ToneCurvePV2012>[\s\S]*?<\/crs:ToneCurvePV2012>/,
+    "",
+  );
+  const stripped = parseLightroomXmp(withoutOwnCurve);
+  check(
+    "without its own rgb curve, rgb stays identity",
+    isDeepStrictEqual(stripped?.params.toneCurve?.rgb, [
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+    ]),
+  );
+  console.log("");
+}
+
 console.log("=== Lightroom Import Tests ===\n");
 testAttributeForm();
 testElementFormHslCurve();
 testNonXmp();
+testPostCropVignette();
+testGrain();
+testEmbeddedLookIgnored();
+testWarmMatteFixture();
 
 console.log("=========================");
 if (failures === 0) {

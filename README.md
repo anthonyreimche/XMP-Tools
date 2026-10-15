@@ -11,6 +11,8 @@ so your photo library stays portable — and bring your Lightroom looks with you
 - **Writes sidecars as you work.** Ratings, labels, keywords, and develop edits
   can be saved back to `.xmp` files next to your images, so other apps —
   Lightroom, Adobe Camera Raw, Darktable, Bridge — see the same metadata.
+  Writes merge into the existing sidecar, so captions, copyright, GPS, and
+  anything else another tool put there stay untouched.
 - **Imports Lightroom presets.** Drop a Lightroom / Adobe Camera Raw `.xmp`
   preset into the Presets panel and apply it like any built-in preset.
 - **Cleans up after itself.** When you remove a photo from SafeLight, its
