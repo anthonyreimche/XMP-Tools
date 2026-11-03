@@ -6,7 +6,7 @@ so your photo library stays portable — and bring your Lightroom looks with you
 ## What it does
 
 - **Reads your existing metadata.** When SafeLight imports a photo that already
-  has an `.xmp` sidecar, your star rating, color label, flag, and keywords come
+  has an `.xmp` sidecar, your star rating, colour label, flag, and keywords come
   along automatically.
 - **Writes sidecars as you work.** Ratings, labels, keywords, and develop edits
   can be saved back to `.xmp` files next to your images, so other apps —
@@ -29,9 +29,9 @@ setting.
 
 ## What gets imported from Lightroom presets
 
-Tone and color adjustments are mapped on import: basic tone/color sliders,
+Tone and colour adjustments are mapped on import: basic tone/color sliders,
 sharpening, noise reduction, the 8-channel HSL mix, Process-2012 tone curves,
-and best-effort color grading.
+and best-effort colour grading.
 
 Crop, transform, lens corrections, and masks are **not** imported. Older
 `.lrtemplate` presets and Capture One `.costyle` styles aren't supported — use

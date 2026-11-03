@@ -18,6 +18,9 @@ export interface CatalogPhoto {
   keywords: string[];
   directoryHandle: FileSystemDirectoryHandle | null;
   fileHandle: FileSystemFileHandle | null;
+  /** Set on a virtual copy: the master photo id. A copy shares its master's
+   *  file and directory handles. */
+  copyOf?: string;
   // …other fields exist in core but aren't used here.
   [key: string]: unknown;
 }
@@ -171,6 +174,10 @@ export interface SafelightAPI {
   registerSettings(c: SettingsContribution): void;
   registerCatalogHooks(c: CatalogHooksContribution): void;
   registerPresetImporter(c: PresetImporterContribution): void;
+  /** Feature-detected: an older host may not provide it. */
+  ui?: {
+    alertDialog?(options: { title: string; message: string }): Promise<void>;
+  };
   settings: {
     get<T>(key: string, fallback: T): T;
     set(key: string, value: unknown): void;

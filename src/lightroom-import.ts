@@ -92,7 +92,7 @@ function parseCurve(xml: string, key: string): { x: number; y: number }[] | null
   return pts.length >= 2 ? pts : null;
 }
 
-// Build one color-grading range from crs ColorGrade* keys, falling back to the
+// Build one colour-grading range from crs ColorGrade* keys, falling back to the
 // older SplitToning* keys when present. Returns null if nothing is set.
 function readGradeRange(
   xml: string,
@@ -178,7 +178,7 @@ export function parseLightroomXmp(
     if (n != null) (params as Record<string, unknown>)[paramKey] = n;
   }
 
-  // HSL — three bands × eight colors
+  // HSL — three bands × eight colours
   const hue = zeroHSL();
   const saturation = zeroHSL();
   const luminance = zeroHSL();
@@ -208,7 +208,7 @@ export function parseLightroomXmp(
     };
   }
 
-  // Color grading (best-effort: ColorGrade*, SplitToning* fallback)
+  // Colour grading (best-effort: ColorGrade*, SplitToning* fallback)
   const shadows = readGradeRange(xml, "Shadow", "Shadow");
   const midtones = readGradeRange(xml, "Midtone");
   const highlights = readGradeRange(xml, "Highlight", "Highlight");

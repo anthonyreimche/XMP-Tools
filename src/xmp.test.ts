@@ -374,6 +374,264 @@ async function testSidecarReadModifyWrite() {
   return passed;
 }
 
+// Other apps write simple properties as attributes and escape keywords; both
+// must survive our read-modify-write untouched.
+function testForeignPacketRoundTrip() {
+  console.log("Testing a Lightroom-style sidecar round trip...");
+  let passed = true;
+  const check = (name: string, cond: boolean) => {
+    if (cond) console.log(`  ✓ ${name}`);
+    else {
+      console.log(`  ✗ ${name}`);
+      passed = false;
+    }
+  };
+
+  const lr = `<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0-c000">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+   xmp:Rating="4"
+   xmp:Label="Red"
+   photoshop:Urgency='1'
+   crs:Exposure2012="+0.50">
+   <dc:subject>
+    <rdf:Bag>
+     <rdf:li>Animals</rdf:li>
+     <rdf:li>Dogs &amp; Cats</rdf:li>
+    </rdf:Bag>
+   </dc:subject>
+   <lr:hierarchicalSubject>
+    <rdf:Bag>
+     <rdf:li>Animals|Birds|Eagle</rdf:li>
+     <rdf:li>Pets|Dogs &amp; Cats</rdf:li>
+    </rdf:Bag>
+   </lr:hierarchicalSubject>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>`;
+
+  const parsed = parseXmp(lr);
+  check("attribute rating read", parsed.rating === 4);
+  check("attribute label read", parsed.label === "red");
+  check("single-quoted attribute urgency read", parsed.flag === "pick");
+  check(
+    "escaped keyword unescaped on read",
+    JSON.stringify(parsed.keywords) === JSON.stringify(["Animals", "Dogs & Cats"]),
+  );
+
+  const base = {
+    id: "lr1",
+    filename: "DSC_0012.NEF",
+    directoryHandle: null,
+    fileHandle: null,
+    rating: 0,
+    colorLabel: "none" as ColorLabel,
+    flag: "none" as FlagStatus,
+    keywords: [],
+  } as unknown as CatalogPhoto;
+  const imported = applyXmpToPhoto(base, parsed);
+  const once = upsertXmp(lr, { ...imported, keywords: [...imported.keywords, "Eagle"] });
+  const reread = parseXmp(once);
+  check("rating survives a keyword write", reread.rating === 4);
+  check("label survives a keyword write", reread.label === "red");
+  check("new keyword written", reread.keywords?.includes("Eagle") === true);
+  check("foreign develop attribute kept", once.includes('crs:Exposure2012="+0.50"'));
+  check("hierarchy left untouched", once.includes("<rdf:li>Animals|Birds|Eagle</rdf:li>"));
+  check("escaped hierarchy entry untouched", once.includes("<rdf:li>Pets|Dogs &amp; Cats</rdf:li>"));
+  check("only one hierarchicalSubject", (once.match(/<lr:hierarchicalSubject>/g) ?? []).length === 1);
+
+  const twice = upsertXmp(once, applyXmpToPhoto(base, parseXmp(once)));
+  const thrice = upsertXmp(twice, applyXmpToPhoto(base, parseXmp(twice)));
+  check(
+    "ampersand keyword stable over two more round trips",
+    JSON.stringify(parseXmp(thrice).keywords) === JSON.stringify(["Animals", "Dogs & Cats", "Eagle"]),
+  );
+  check("no double escaping", !thrice.includes("&amp;amp;"));
+
+  console.log(passed ? "  All Lightroom round-trip tests passed\n" : "  Some Lightroom round-trip tests failed\n");
+  return passed;
+}
+
+// Lightroom Classic nests Descriptions inside crs:Look / crs:Parameters; our
+// properties belong on the outer one, and the nested block must stay intact.
+function testNestedDescriptions() {
+  console.log("Testing nested Descriptions...");
+  let passed = true;
+  const check = (name: string, cond: boolean) => {
+    if (cond) console.log(`  ✓ ${name}`);
+    else {
+      console.log(`  ✗ ${name}`);
+      passed = false;
+    }
+  };
+
+  const look = `<crs:Look>
+    <rdf:Description
+     crs:Name="Adobe Color"
+     crs:Amount="1">
+    <xmp:Label>Blue</xmp:Label>
+    <crs:Parameters>
+     <rdf:Description
+      crs:Version="14.0"
+      crs:ConvertToGrayscale="False"/>
+    </crs:Parameters>
+    </rdf:Description>
+   </crs:Look>`;
+  const lr = `<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+   xmp:Rating="2"
+   crs:Exposure2012="+0.50">
+   ${look}
+   <xmp:Label>Red</xmp:Label>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>`;
+
+  check("label read from the top-level Description", parseXmp(lr).label === "red");
+
+  const photo = {
+    id: "n1",
+    filename: "DSC_0012.NEF",
+    directoryHandle: null,
+    fileHandle: null,
+    rating: 5,
+    colorLabel: "red" as ColorLabel,
+    flag: "none" as FlagStatus,
+    keywords: ["a"],
+  } as unknown as CatalogPhoto;
+  const out = upsertXmp(lr, photo);
+  const lookAt = out.indexOf(look);
+  check("Look block kept verbatim", lookAt !== -1);
+  const rest = lookAt === -1 ? out : out.slice(0, lookAt) + out.slice(lookAt + look.length);
+  check("rating lands on the outer Description", parseXmp(rest).rating === 5);
+  check("keywords land on the outer Description", parseXmp(rest).keywords?.[0] === "a");
+  check("one Description closed per opened", (out.match(/<\/rdf:Description>/g) ?? []).length === 2);
+
+  console.log(passed ? "  All nested Description tests passed\n" : "  Some nested Description tests failed\n");
+  return passed;
+}
+
+// Apps that build keywords from the hierarchy would bring a removed keyword back.
+function testHierarchyPruning() {
+  console.log("Testing hierarchy pruning...");
+  let passed = true;
+  const check = (name: string, cond: boolean) => {
+    if (cond) console.log(`  ✓ ${name}`);
+    else {
+      console.log(`  ✗ ${name}`);
+      passed = false;
+    }
+  };
+
+  const packet = (hierarchy: string[]) => `<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:lr="http://ns.adobe.com/lightroom/1.0/">
+   <dc:subject><rdf:Bag><rdf:li>Animals</rdf:li><rdf:li>Birds</rdf:li><rdf:li>Eagle</rdf:li><rdf:li>Dogs &amp; Cats</rdf:li></rdf:Bag></dc:subject>
+   <lr:hierarchicalSubject><rdf:Bag>${hierarchy.map((h) => `<rdf:li>${h}</rdf:li>`).join("")}</rdf:Bag></lr:hierarchicalSubject>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>`;
+  const photo = (keywords: string[]) =>
+    ({
+      id: "h1",
+      filename: "DSC_0012.NEF",
+      directoryHandle: null,
+      fileHandle: null,
+      rating: 0,
+      colorLabel: "none" as ColorLabel,
+      flag: "none" as FlagStatus,
+      keywords,
+    }) as unknown as CatalogPhoto;
+
+  const out = upsertXmp(
+    packet(["Animals|Birds|Eagle", "Animals|Birds", "Pets|Dogs &amp; Cats"]),
+    photo(["Animals", "Birds", "Dogs & Cats"]),
+  );
+  check("entry whose leaf was removed is dropped", !out.includes("Animals|Birds|Eagle"));
+  check("other entries kept verbatim", out.includes("<rdf:li>Animals|Birds</rdf:li><rdf:li>Pets|Dogs &amp; Cats</rdf:li>"));
+
+  const emptied = upsertXmp(packet(["Animals|Birds|Eagle"]), photo(["Animals", "Birds", "Dogs & Cats"]));
+  check("hierarchy with nothing left is removed", !emptied.includes("lr:hierarchicalSubject>"));
+
+  const unchanged = packet(["Animals|Birds|Eagle"]);
+  const same = upsertXmp(unchanged, photo(["Animals", "Birds", "Eagle", "Dogs & Cats"]));
+  check("nothing removed leaves the hierarchy alone", same.includes("<rdf:li>Animals|Birds|Eagle</rdf:li>"));
+
+  console.log(passed ? "  All hierarchy pruning tests passed\n" : "  Some hierarchy pruning tests failed\n");
+  return passed;
+}
+
+// Only a missing sidecar may be replaced by a fresh packet; a locked or
+// unreadable one must fail the write rather than be overwritten.
+async function testUnreadableSidecar() {
+  console.log("Testing unreadable sidecars...");
+  let passed = true;
+  const check = (name: string, cond: boolean) => {
+    if (cond) console.log(`  ✓ ${name}`);
+    else {
+      console.log(`  ✗ ${name}`);
+      passed = false;
+    }
+  };
+
+  const attempt = async (readError: Error) => {
+    let written: string | null = null;
+    const dir = {
+      async getFileHandle() {
+        return {
+          async getFile() {
+            throw readError;
+          },
+          async createWritable() {
+            return {
+              async write(data: string) {
+                written = data;
+              },
+              async close() {},
+            };
+          },
+        };
+      },
+    } as unknown as FileSystemDirectoryHandle;
+    const photo = { id: "r1", filename: "DSC_0012.NEF", rating: 4, colorLabel: "none", flag: "none", keywords: [] } as unknown as CatalogPhoto;
+    let threw = false;
+    try {
+      await writeXmpSidecar(dir, "DSC_0012.NEF", photo);
+    } catch {
+      threw = true;
+    }
+    return { threw, written };
+  };
+
+  const busy = await attempt(
+    new Error("Error invoking remote method 'fs:read': Error: EBUSY: resource busy or locked, open 'D:\\x\\DSC_0012.xmp'"),
+  );
+  check("locked sidecar fails the write", busy.threw);
+  check("locked sidecar not overwritten", busy.written === null);
+
+  const denied = await attempt(new DOMException("denied", "NotAllowedError"));
+  check("access error not overwritten", denied.threw && denied.written === null);
+
+  const enoent = await attempt(
+    new Error("Error invoking remote method 'fs:read': Error: ENOENT: no such file or directory, open 'D:\\x\\DSC_0012.xmp'"),
+  );
+  check("missing sidecar (ENOENT) is created", !enoent.threw && enoent.written !== null);
+
+  const notFound = await attempt(new DOMException("missing", "NotFoundError"));
+  check("missing sidecar (NotFoundError) is created", !notFound.threw && notFound.written !== null);
+
+  console.log(passed ? "  All unreadable sidecar tests passed\n" : "  Some unreadable sidecar tests failed\n");
+  return passed;
+}
+
 async function runTests() {
   console.log("=== XMP Sidecar Tests ===\n");
 
@@ -384,6 +642,10 @@ async function runTests() {
     testRejectFlag(),
     testRoundTrip(),
     testUpsert(),
+    testForeignPacketRoundTrip(),
+    testNestedDescriptions(),
+    testHierarchyPruning(),
+    await testUnreadableSidecar(),
     await testSidecarReadModifyWrite(),
   ];
 

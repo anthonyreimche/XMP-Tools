@@ -455,7 +455,7 @@ function activate(api) {
 		fields: [{
 			key: WRITE_KEY,
 			label: "Write XMP sidecars",
-			hint: "Save ratings, labels, keywords, and edits to .xmp files alongside your images. Enables interoperability with Lightroom, Darktable, and other photo tools.",
+			hint: "Save ratings, labels, keywords, and edits to .xmp files alongside your images. Enables interoperability with other photo tools.",
 			type: "boolean",
 			default: false
 		}]

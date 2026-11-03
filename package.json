@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "install-local": "node scripts/install.mjs",
-    "test": "node --experimental-strip-types src/xmp.test.ts && node --experimental-strip-types src/lightroom-import.test.ts"
+    "test": "node --experimental-strip-types src/xmp.test.ts && node --experimental-strip-types src/index.test.ts && node --experimental-strip-types src/lightroom-import.test.ts"
   },
   "devDependencies": {
     "rolldown": "^1.1.3",
