@@ -57,6 +57,6 @@ npm test                      # run the XMP + Lightroom-import test scripts
 The installer auto-detects SafeLight's `userData/plugins` directory; override
 with `SAFELIGHT_PLUGINS_DIR=/path/to/plugins` or `--dir /path/to/plugins`.
 Restart SafeLight (or toggle the extension in the Extensions manager) to load
-it. The app core knows nothing about XMP — it emits catalog lifecycle hooks
+it. The app core knows nothing about XMP — it emits catalogue lifecycle hooks
 (`onPhotoImport`, `onMetadataChange`, `onEditCommit`, `onPhotoRemove`) plus a
 pluggable preset importer, which this extension subscribes to.

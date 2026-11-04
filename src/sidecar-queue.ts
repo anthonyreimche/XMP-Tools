@@ -1,4 +1,4 @@
-// A keyed background queue for sidecar writes. The catalog hooks run inside the
+// A keyed background queue for sidecar writes. The catalogue hooks run inside the
 // core's commit under a timeout, so they hand their work here and return. One
 // job per key runs at a time (two writers on one sidecar would each read the
 // other's stale copy), and a job queued again before it starts is folded into

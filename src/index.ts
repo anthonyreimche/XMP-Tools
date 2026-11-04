@@ -3,7 +3,7 @@
 // Owns everything XMP: reads sidecar metadata on import, writes sidecars on
 // metadata/edit changes, deletes its own when their image is deleted, and
 // teaches the Presets panel to import Lightroom (.xmp) presets. The app core no
-// longer knows about XMP — it just emits catalog lifecycle hooks this extension
+// longer knows about XMP — it just emits catalogue lifecycle hooks this extension
 // subscribes to.
 
 import type { CatalogPhoto, EditState, SafelightAPI } from "./safelight";
@@ -60,7 +60,7 @@ async function imageOnDisk(dir: FileSystemDirectoryHandle, name: string): Promis
 export function activate(api: SafelightAPI): void {
   const writeEnabled = () => api.settings.get(WRITE_KEY, false);
 
-  // Settings dialog (⚙ in the Extensions panel) — replaces the old core toggle.
+  // Settings dialogue (⚙ in the Extensions panel) — replaces the old core toggle.
   api.registerSettings({
     title: "XMP Tools",
     fields: [
@@ -102,7 +102,7 @@ export function activate(api: SafelightAPI): void {
       const n = failures.length;
       void api.ui.alertDialog({
         title: "XMP sidecars not saved",
-        message: `${n} sidecar${n === 1 ? "" : "s"} couldn't be written. Ratings, labels and keywords are still saved in the catalog.\n\nCheck that the folder can be written to, then change the photos again to retry.`,
+        message: `${n} sidecar${n === 1 ? "" : "s"} couldn't be written. Ratings, labels and keywords are still saved in the catalogue.\n\nCheck that the folder can be written to, then change the photos again to retry.`,
       });
     },
   });
@@ -135,7 +135,7 @@ export function activate(api: SafelightAPI): void {
       queueWrite(photo, editState);
     },
 
-    // The hook fires for removal from the catalog and for deletion from disk
+    // The hook fires for removal from the catalogue and for deletion from disk
     // alike, so only a sidecar whose image is gone and that holds nothing but
     // our own properties goes with it.
     async onPhotoRemove({ photo, dir, fileName }) {

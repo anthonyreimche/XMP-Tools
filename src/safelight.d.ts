@@ -4,7 +4,7 @@
 // needs. These mirror the core types in src/catalog/types.ts and
 // src/extensions/types.ts; only the fields this extension touches are declared.
 
-// ── Catalog data ────────────────────────────────────────────────────────────
+// ── Catalogue data ────────────────────────────────────────────────────────────
 
 export type ColorLabel = "none" | "red" | "yellow" | "green" | "blue" | "purple";
 export type FlagStatus = "none" | "pick" | "reject";

@@ -1,4 +1,4 @@
-// Tests for the catalog hooks: when a sidecar may be deleted, and background
+// Tests for the catalogue hooks: when a sidecar may be deleted, and background
 // writing that never holds the core's commit hook open.
 // Run with: node --experimental-strip-types src/index.test.ts
 
@@ -114,7 +114,7 @@ function setup(writeOn: boolean) {
     },
   } as unknown as SafelightAPI;
   activate(api);
-  if (!hooks) throw new Error("no catalog hooks registered");
+  if (!hooks) throw new Error("no catalogue hooks registered");
   return { hooks, alerts };
 }
 
@@ -151,7 +151,7 @@ async function testRemove() {
     await removeCase({ writeOn: true, sidecar: FOREIGN, imageOnDisk: false }),
   );
   check(
-    "catalog-only removal (file still on disk) keeps the sidecar",
+    "catalogue-only removal (file still on disk) keeps the sidecar",
     await removeCase({ writeOn: true, sidecar: OWN("DSC_0012.NEF"), imageOnDisk: true }),
   );
   const shared = OWN("DSC_0012.NEF").replace(
@@ -242,7 +242,7 @@ async function testFailures() {
   check("failures are logged", errors.length > 0);
 }
 
-console.log("=== XMP catalog hook tests ===\n");
+console.log("=== XMP catalogue hook tests ===\n");
 await testRemove();
 await testBackgroundWrites();
 await testCopiesAndEdits();

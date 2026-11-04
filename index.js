@@ -16,72 +16,154 @@ const NAMESPACES = {
 	xmp: "http://ns.adobe.com/xap/1.0/",
 	dc: "http://purl.org/dc/elements/1.1/",
 	photoshop: "http://ns.adobe.com/photoshop/1.0/",
-	lr: "http://ns.adobe.com/lightroom/1.0/",
 	safelight: "http://ns.safelight.app/1.0/"
 };
-/** Parse XMP XML and extract metadata fields. */
-function parseXmp(xmpXml) {
+/** Parse XMP XML and extract metadata fields. Simple properties are read in
+*  both serializations XMP allows: <xmp:Rating>4</xmp:Rating> and the
+*  attribute form xmp:Rating="4" that most other apps write. Only top-level
+*  Descriptions are read, never the structs nested inside them. */
+function parseXmp(packet) {
 	const result = {};
-	const ratingMatch = xmpXml.match(/<xmp:Rating>(\d)<\/xmp:Rating>/);
-	if (ratingMatch) {
-		const rating = parseInt(ratingMatch[1], 10);
-		if (rating >= 0 && rating <= 5) result.rating = rating;
+	const xmpXml = liftNestedDescriptions(packet).text;
+	const rating = readProperty(xmpXml, "xmp:Rating");
+	if (rating !== void 0 && /^\d$/.test(rating)) {
+		const value = parseInt(rating, 10);
+		if (value <= 5) result.rating = value;
 	}
-	const labelMatch = xmpXml.match(/<xmp:Label>([^<]+)<\/xmp:Label>/);
-	if (labelMatch) {
-		const label = labelMatch[1].toLowerCase();
-		if ([
-			"none",
-			"red",
-			"yellow",
-			"green",
-			"blue",
-			"purple"
-		].includes(label)) result.label = label;
-	}
-	const urgencyMatch = xmpXml.match(/<photoshop:Urgency>(\d)<\/photoshop:Urgency>/);
-	if (urgencyMatch) {
-		const urgency = parseInt(urgencyMatch[1], 10);
-		if (urgency === 1) result.flag = "pick";
-		else if (urgency === 8) result.flag = "reject";
-	}
-	const pickMatch = xmpXml.match(/<xmp:PickFlag>(true|1)<\/xmp:PickFlag>/i);
-	if (xmpXml.match(/<xmp:RejectFlag>(true|1)<\/xmp:RejectFlag>/i)) result.flag = "reject";
-	else if (pickMatch) result.flag = "pick";
-	const subjectMatch = xmpXml.match(/<dc:subject>\s*<rdf:Bag>([\s\S]*?)<\/rdf:Bag>\s*<\/dc:subject>/);
-	if (subjectMatch) {
-		const bagContent = subjectMatch[1];
-		const keywords = [];
-		const liRegex = /<rdf:li>([^<]+)<\/rdf:li>/g;
-		let liMatch;
-		while ((liMatch = liRegex.exec(bagContent)) !== null) keywords.push(liMatch[1]);
-		if (keywords.length > 0) result.keywords = keywords;
-	}
-	const hierMatch = xmpXml.match(/<lr:hierarchicalSubject>\s*<rdf:Bag>([\s\S]*?)<\/rdf:Bag>\s*<\/lr:hierarchicalSubject>/);
-	if (hierMatch) {
-		const bagContent = hierMatch[1];
-		const keywords = [];
-		const liRegex = /<rdf:li>([^<]+)<\/rdf:li>/g;
-		let liMatch;
-		while ((liMatch = liRegex.exec(bagContent)) !== null) keywords.push(liMatch[1]);
-		if (keywords.length > 0) result.hierarchicalKeywords = keywords;
-	}
+	const label = readProperty(xmpXml, "xmp:Label")?.toLowerCase();
+	if (label && [
+		"none",
+		"red",
+		"yellow",
+		"green",
+		"blue",
+		"purple"
+	].includes(label)) result.label = label;
+	const urgency = readProperty(xmpXml, "photoshop:Urgency");
+	if (urgency === "1") result.flag = "pick";
+	else if (urgency === "8") result.flag = "reject";
+	const isTrue = (v) => v !== void 0 && /^(true|1)$/i.test(v);
+	if (isTrue(readProperty(xmpXml, "xmp:RejectFlag"))) result.flag = "reject";
+	else if (isTrue(readProperty(xmpXml, "xmp:PickFlag"))) result.flag = "pick";
+	const keywords = readBag(xmpXml, "dc:subject");
+	if (keywords.length > 0) result.keywords = keywords;
+	const hierarchical = readBag(xmpXml, "lr:hierarchicalSubject");
+	if (hierarchical.length > 0) result.hierarchicalKeywords = hierarchical;
 	return result;
+}
+/** A simple property's text, from its element or its attribute form. */
+function readProperty(xml, tag) {
+	const element = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([^<]*)</${tag}>`));
+	if (element) return unescapeXml$1(element[1]).trim();
+	const attribute = xml.match(new RegExp(`\\s${tag}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`));
+	if (attribute) return unescapeXml$1(attribute[1] ?? attribute[2]).trim();
+}
+/** The entries of an rdf:Bag property, unescaped. */
+function readBag(xml, tag) {
+	const bag = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*<rdf:Bag(?:\\s[^>]*)?>([\\s\\S]*?)</rdf:Bag>\\s*</${tag}>`));
+	if (!bag) return [];
+	return [...bag[1].matchAll(/<rdf:li(?:\s[^>]*)?>([^<]*)<\/rdf:li>/g)].map((li) => unescapeXml$1(li[1])).filter((entry) => entry.length > 0);
 }
 /** Properties this extension owns and rewrites wholesale on every write. The
 *  safelight: pair is owned only when the private namespace is in play, so a
 *  plain rating/label write never strips the develop params an edit commit
-*  saved earlier. */
+*  saved earlier. lr:hierarchicalSubject is not ours: the catalogue keeps only
+*  flat keywords, so rewriting it would flatten another app's hierarchy. */
 const OWNED_TAGS = [
 	"xmp:Rating",
 	"xmp:Label",
 	"xmp:PickFlag",
 	"xmp:RejectFlag",
 	"photoshop:Urgency",
-	"dc:subject",
-	"lr:hierarchicalSubject"
+	"dc:subject"
 ];
 const PRIVATE_TAGS = ["safelight:DevelopParams", "safelight:EditHistory"];
+/** Stamped on packets this extension creates, so removal can tell its own
+*  sidecars from those of the other tools that share the name. */
+const XMPTK = "XMP Tools for Safelight";
+/** Remove every serialization of `tags`: element, empty element, attribute. */
+function stripProperties(text, tags) {
+	let out = text;
+	for (const tag of tags) {
+		out = out.replace(new RegExp(`\\s*<${tag}[\\s\\S]*?<\\/${tag}>`, "g"), "");
+		out = out.replace(new RegExp(`\\s*<${tag}\\b[^>]*/>`, "g"), "");
+		out = out.replace(new RegExp(`\\s+${tag}\\s*=\\s*(?:"[^"]*"|'[^']*')`, "g"), "");
+	}
+	return out;
+}
+/** darktable/exiv2 write attribute-only Descriptions self-closed. Only the
+*  first Description is expanded, as that is where our properties go. */
+function expandSelfClosedDescription(text) {
+	const first = text.search(/<rdf:Description\b/);
+	if (first === -1) return text;
+	const expanded = text.slice(first).replace(/^<rdf:Description\b([^>]*?)\/\s*>/, "<rdf:Description$1></rdf:Description>");
+	return text.slice(0, first) + expanded;
+}
+const DESCRIPTION_TAG = /<rdf:Description\b[^>]*>|<\/rdf:Description\s*>/g;
+/** Lift out the Descriptions nested inside another one (Lightroom's crs:Look
+*  and crs:Parameters structs), so reads and edits see only the top-level
+*  properties and the first </rdf:Description> left closes the first
+*  Description; `restore` puts them back verbatim. */
+function liftNestedDescriptions(text) {
+	const nested = [];
+	let out = "";
+	let from = 0;
+	let depth = 0;
+	let start = -1;
+	const lift = (end) => {
+		out += `${text.slice(from, start)}\u0000${nested.length}\u0000`;
+		nested.push(text.slice(start, end));
+		from = end;
+		start = -1;
+	};
+	for (const match of text.matchAll(DESCRIPTION_TAG)) {
+		const tag = match[0];
+		const at = match.index;
+		if (tag.startsWith("</")) {
+			depth = Math.max(0, depth - 1);
+			if (depth === 1 && start !== -1) lift(at + tag.length);
+		} else if (/\/\s*>$/.test(tag)) {
+			if (depth >= 1 && start === -1) {
+				start = at;
+				lift(at + tag.length);
+			}
+		} else {
+			if (depth === 1 && start === -1) start = at;
+			depth++;
+		}
+	}
+	out += text.slice(from);
+	return {
+		text: out,
+		restore: (edited) => edited.replace(/\u0000(\d+)\u0000/g, (_m, i) => nested[Number(i)])
+	};
+}
+/** Drop the hierarchy entries whose leaf (after the last "|") was removed
+*  from dc:subject, so apps that rebuild keywords from the hierarchy don't
+*  bring it back. Every other entry is left as it was written. */
+function pruneHierarchy(text, removed) {
+	if (removed.size === 0) return text;
+	return text.replace(/(\s*)(<lr:hierarchicalSubject(?:\s[^>]*)?>)([\s\S]*?)(<\/lr:hierarchicalSubject>)/, (_whole, lead, open, inner, close) => {
+		let kept = 0;
+		const pruned = inner.replace(/\s*<rdf:li(?:\s[^>]*)?>([^<]*)<\/rdf:li>/g, (li, value) => {
+			const path = unescapeXml$1(value);
+			if (removed.has(path.slice(path.lastIndexOf("|") + 1))) return "";
+			kept++;
+			return li;
+		});
+		return kept > 0 ? `${lead}${open}${pruned}${close}` : "";
+	});
+}
+/** True only for a packet this extension created that still holds nothing but
+*  its own properties. Another tool that adds to our sidecar keeps our stamp,
+*  so the stamp alone doesn't prove the file is ours to delete. */
+function isOwnPacket(text) {
+	if (!text.includes(`x:xmptk="${XMPTK}"`)) return false;
+	if ((text.match(/<rdf:Description\b/g) ?? []).length !== 1) return false;
+	const description = stripProperties(expandSelfClosedDescription(text), [...OWNED_TAGS, ...PRIVATE_TAGS]).match(/<rdf:Description\b([^>]*)>([\s\S]*?)<\/rdf:Description>/);
+	if (!description) return false;
+	return description[1].replace(/\s+(?:xmlns:[\w.-]+|rdf:about)\s*=\s*(?:"[^"]*"|'[^']*')/g, "").trim() === "" && description[2].trim() === "";
+}
 /** Serialize the owned properties that currently have a value, one element per
 *  entry. An absent entry means "unset" — the upsert removes the property. */
 function ownedElements(photo, editState, options) {
@@ -96,7 +178,6 @@ function ownedElements(photo, editState, options) {
 	if (photo.keywords.length > 0) {
 		const items = photo.keywords.map((kw) => `<rdf:li>${escapeXml(kw)}</rdf:li>`).join("");
 		out.push(`<dc:subject><rdf:Bag>${items}</rdf:Bag></dc:subject>`);
-		out.push(`<lr:hierarchicalSubject><rdf:Bag>${items}</rdf:Bag></lr:hierarchicalSubject>`);
 	}
 	if (options?.includePrivateNamespace && editState) {
 		const currentEdit = editState.stack[editState.currentIndex];
@@ -115,14 +196,13 @@ function ownedElements(photo, editState, options) {
 function generateXmp(photo, editState, options) {
 	const lines = [
 		"<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-		"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">",
+		`<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="${XMPTK}">`,
 		"  <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">",
 		"    <rdf:Description"
 	];
 	lines.push(`      xmlns:xmp="${NAMESPACES.xmp}"`);
 	lines.push(`      xmlns:dc="${NAMESPACES.dc}"`);
 	lines.push(`      xmlns:photoshop="${NAMESPACES.photoshop}"`);
-	lines.push(`      xmlns:lr="${NAMESPACES.lr}"`);
 	if (options?.includePrivateNamespace) lines.push(`      xmlns:safelight="${NAMESPACES.safelight}"`);
 	lines.push("      rdf:about=\"\">");
 	for (const prop of ownedElements(photo, editState, options)) lines.push(`      ${prop}`);
@@ -137,30 +217,49 @@ function generateXmp(photo, editState, options) {
 *  existing packet this is generateXmp. */
 function upsertXmp(existing, photo, editState, options) {
 	if (!existing || !/<rdf:Description[\s/>]/.test(existing)) return generateXmp(photo, editState, options);
-	let text = existing;
-	text = text.replace(/<rdf:Description\b([^>]*?)\/\s*>/, "<rdf:Description$1></rdf:Description>");
 	const owned = options?.includePrivateNamespace ? [...OWNED_TAGS, ...PRIVATE_TAGS] : OWNED_TAGS;
-	for (const tag of owned) {
-		text = text.replace(new RegExp(`\\s*<${tag}[\\s\\S]*?<\\/${tag}>`, "g"), "");
-		text = text.replace(new RegExp(`\\s*<${tag}\\b[^>]*/>`, "g"), "");
-		text = text.replace(new RegExp(`\\s+${tag}="[^"]*"`, "g"), "");
-	}
+	const lifted = liftNestedDescriptions(existing);
+	const kept = new Set(photo.keywords);
+	const removed = new Set(readBag(lifted.text, "dc:subject").filter((k) => !kept.has(k)));
+	let text = stripProperties(expandSelfClosedDescription(lifted.text), owned);
+	text = pruneHierarchy(text, removed);
 	text = text.replace(/<rdf:Description\b([^>]*)>/, (_full, attrs) => {
 		let a = attrs;
 		if (!/xmlns:xmp=/.test(a)) a += ` xmlns:xmp="${NAMESPACES.xmp}"`;
 		if (!/xmlns:dc=/.test(a)) a += ` xmlns:dc="${NAMESPACES.dc}"`;
 		if (!/xmlns:photoshop=/.test(a)) a += ` xmlns:photoshop="${NAMESPACES.photoshop}"`;
-		if (!/xmlns:lr=/.test(a)) a += ` xmlns:lr="${NAMESPACES.lr}"`;
 		if (options?.includePrivateNamespace && !/xmlns:safelight=/.test(a)) a += ` xmlns:safelight="${NAMESPACES.safelight}"`;
 		return `<rdf:Description${a}>`;
 	});
 	const props = ownedElements(photo, editState, options);
 	const insertion = props.length ? `      ${props.join("\n      ")}\n    ` : "";
-	return text.replace(/<\/rdf:Description>/, () => `${insertion}</rdf:Description>`);
+	return lifted.restore(text.replace(/<\/rdf:Description>/, () => `${insertion}</rdf:Description>`));
 }
 /** Escape special XML characters. */
 function escapeXml(text) {
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+const NAMED_ENTITIES = {
+	lt: "<",
+	gt: ">",
+	quot: "\"",
+	apos: "'",
+	amp: "&"
+};
+/** Undo XML escaping in one pass, so "&amp;lt;" reads back as "&lt;". */
+function unescapeXml$1(text) {
+	return text.replace(/&(#x[0-9a-fA-F]+|#\d+|lt|gt|quot|apos|amp);/g, (entity, body) => {
+		if (!body.startsWith("#")) return NAMED_ENTITIES[body];
+		const code = body[1] === "x" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+		return code <= 1114111 ? String.fromCodePoint(code) : entity;
+	});
+}
+/** The browser's file API names a missing file NotFoundError; the desktop
+*  bridge passes Node's error on with the errno only in its message. */
+function isMissingFile(error) {
+	if (typeof error !== "object" || error === null) return false;
+	const { name, message } = error;
+	return name === "NotFoundError" || typeof message === "string" && /\bENOENT(?=:)/.test(message);
 }
 /** Read XMP sidecar file for a given image file. Returns null if not found. */
 async function readXmpSidecar(parentDir, imageFilename) {
@@ -178,19 +277,20 @@ async function writeXmpSidecar(parentDir, imageFilename, photo, editState, optio
 	let existing = null;
 	try {
 		existing = await (await (await parentDir.getFileHandle(xmpName)).getFile()).text();
-	} catch {
-		existing = null;
+	} catch (e) {
+		if (!isMissingFile(e)) throw e;
 	}
 	const xmpXml = upsertXmp(existing, photo, editState, options);
 	const writable = await (await parentDir.getFileHandle(xmpName, { create: true })).createWritable();
 	await writable.write(xmpXml);
 	await writable.close();
 }
-/** Delete XMP sidecar file (used when removing photos). */
-async function deleteXmpSidecar(parentDir, imageFilename) {
+/** Delete the image's sidecar only when isOwnPacket proves it holds nothing
+*  but what this extension wrote; any other sidecar is left in place. */
+async function deleteOwnXmpSidecar(parentDir, imageFilename) {
 	const xmpName = getXmpSidecarName(imageFilename);
 	try {
-		await parentDir.removeEntry(xmpName);
+		if (isOwnPacket(await (await (await parentDir.getFileHandle(xmpName)).getFile()).text())) await parentDir.removeEntry(xmpName);
 	} catch {}
 }
 /** Build the CatalogPhoto field overrides for an imported XMP (only fields
@@ -446,8 +546,81 @@ function parseLightroomXmp(source, fallbackName = "Imported preset") {
 	};
 }
 //#endregion
+//#region src/sidecar-queue.ts
+function createKeyedQueue(opts) {
+	const waiting = /* @__PURE__ */ new Map();
+	const running = /* @__PURE__ */ new Map();
+	let failures = [];
+	const start = (key, job) => {
+		const done = Promise.resolve().then(() => opts.run(job)).catch((error) => {
+			failures.push({
+				job,
+				error
+			});
+		}).finally(() => {
+			running.delete(key);
+			pump();
+			if (running.size === 0 && waiting.size === 0) {
+				const drained = failures;
+				failures = [];
+				opts.onDrain(drained);
+			}
+		});
+		running.set(key, done);
+	};
+	const pump = () => {
+		for (const [key, job] of waiting) {
+			if (running.size >= opts.concurrency) return;
+			if (running.has(key)) continue;
+			waiting.delete(key);
+			start(key, job);
+		}
+	};
+	return {
+		push(key, job) {
+			const prev = waiting.get(key);
+			waiting.set(key, prev === void 0 ? job : opts.merge(prev, job));
+			pump();
+		},
+		cancel(key) {
+			waiting.delete(key);
+		},
+		async settled(key) {
+			for (let job = running.get(key); job; job = running.get(key)) await job;
+		}
+	};
+}
+//#endregion
 //#region src/index.ts
 const WRITE_KEY = "writeXmpSidecars";
+const WRITE_CONCURRENCY = 4;
+const LISTING_TTL_MS = 1e3;
+const listings = /* @__PURE__ */ new WeakMap();
+async function listNames(dir) {
+	const names = /* @__PURE__ */ new Set();
+	for await (const name of dir.keys()) names.add(name.toLowerCase());
+	return names;
+}
+/** Whether the folder still holds `name`. The desktop build's handles open
+*  lazily, so getFileHandle succeeds for a missing file; the listing can tell.
+*  One listing serves a whole removal batch, and a stale one errs toward
+*  reporting a deleted file as present, which keeps its sidecar. */
+async function imageOnDisk(dir, name) {
+	const now = Date.now();
+	let listing = listings.get(dir);
+	if (!listing || now - listing.at > LISTING_TTL_MS) {
+		listing = {
+			at: now,
+			names: listNames(dir)
+		};
+		listings.set(dir, listing);
+	}
+	try {
+		return (await listing.names).has(name.toLowerCase());
+	} catch {
+		return true;
+	}
+}
 function activate(api) {
 	const writeEnabled = () => api.settings.get(WRITE_KEY, false);
 	api.registerSettings({
@@ -460,35 +633,59 @@ function activate(api) {
 			default: false
 		}]
 	});
+	let failureNoticeShown = false;
+	const writes = createKeyedQueue({
+		concurrency: WRITE_CONCURRENCY,
+		async run({ photo, editState }) {
+			if (!writeEnabled() || !photo.directoryHandle || !photo.fileHandle) return;
+			await writeXmpSidecar(photo.directoryHandle, photo.fileHandle.name, photo, editState, editState ? { includePrivateNamespace: true } : void 0);
+		},
+		merge: (waiting, next) => ({
+			photo: next.photo,
+			editState: next.editState ?? waiting.editState
+		}),
+		onDrain(failures) {
+			if (failures.length === 0) {
+				failureNoticeShown = false;
+				return;
+			}
+			for (const { job, error } of failures) console.error(`[xmp] failed to write sidecar for ${job.photo.filename}:`, error);
+			if (failureNoticeShown || !api.ui?.alertDialog) return;
+			failureNoticeShown = true;
+			const n = failures.length;
+			api.ui.alertDialog({
+				title: "XMP sidecars not saved",
+				message: `${n} sidecar${n === 1 ? "" : "s"} couldn't be written. Ratings, labels and keywords are still saved in the catalogue.\n\nCheck that the folder can be written to, then change the photos again to retry.`
+			});
+		}
+	});
+	const queueWrite = (photo, editState) => {
+		if (photo.copyOf) return;
+		writes.push(photo.id, {
+			photo,
+			editState
+		});
+	};
 	api.registerCatalogHooks({
 		id: "com.safelight.xmp-tools.sidecars",
 		async onPhotoImport({ dir, fileName }) {
 			const xmp = await readXmpSidecar(dir, fileName);
 			return xmp ? xmpToPhotoOverrides(xmp) : void 0;
 		},
-		async onMetadataChange({ photos, getEditState }) {
+		async onMetadataChange({ photos }) {
 			if (!writeEnabled()) return;
-			for (const p of photos) {
-				if (!p.directoryHandle || !p.fileHandle) continue;
-				try {
-					const editState = await getEditState(p.id);
-					await writeXmpSidecar(p.directoryHandle, p.fileHandle.name, p, editState ?? void 0);
-				} catch (e) {
-					console.warn(`[xmp] failed to write sidecar for ${p.filename}:`, e);
-				}
-			}
+			for (const p of photos) queueWrite(p);
 		},
 		async onEditCommit({ photo, editState }) {
 			if (!writeEnabled()) return;
-			if (!photo.directoryHandle || !photo.fileHandle) return;
-			try {
-				await writeXmpSidecar(photo.directoryHandle, photo.fileHandle.name, photo, editState, { includePrivateNamespace: true });
-			} catch (e) {
-				console.warn(`[xmp] failed to write sidecar for ${photo.filename}:`, e);
-			}
+			queueWrite(photo, editState);
 		},
-		async onPhotoRemove({ dir, fileName }) {
-			await deleteXmpSidecar(dir, fileName);
+		async onPhotoRemove({ photo, dir, fileName }) {
+			writes.cancel(photo.id);
+			await writes.settled(photo.id);
+			if (!writeEnabled() || photo.copyOf) return;
+			if (await imageOnDisk(dir, fileName)) return;
+			await deleteOwnXmpSidecar(dir, fileName);
 		}
 	});
 	api.registerPresetImporter({

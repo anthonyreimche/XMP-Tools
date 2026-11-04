@@ -120,7 +120,7 @@ interface XmpWriteOptions {
 /** Properties this extension owns and rewrites wholesale on every write. The
  *  safelight: pair is owned only when the private namespace is in play, so a
  *  plain rating/label write never strips the develop params an edit commit
- *  saved earlier. lr:hierarchicalSubject is not ours: the catalog keeps only
+ *  saved earlier. lr:hierarchicalSubject is not ours: the catalogue keeps only
  *  flat keywords, so rewriting it would flatten another app's hierarchy. */
 const OWNED_TAGS = [
   "xmp:Rating",
