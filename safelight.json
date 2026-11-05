@@ -1,7 +1,7 @@
 {
   "id": "com.safelight.xmp-tools",
   "name": "XMP Tools",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Keep ratings, labels, keywords, and edits in portable .xmp sidecars — and import your Lightroom presets.",
   "author": "Anthony Reimche",
   "main": "index.js",
